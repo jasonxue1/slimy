@@ -146,7 +146,7 @@ jobs:
           }
 
           zig build `
-            -Doptimize=ReleaseSafe `
+            -Doptimize=ReleaseFast `
             -Dsuffix `
             -Dstrip `
             -Dtimestamp `
@@ -159,7 +159,7 @@ jobs:
         shell: bash
         run: |
           zig build \
-            -Doptimize=ReleaseSafe \
+            -Doptimize=ReleaseFast \
             -Dsuffix \
             -Dstrip \
             -Dtimestamp \
