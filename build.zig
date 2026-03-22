@@ -44,6 +44,10 @@ pub fn build(b: *std.Build) !void {
     exe.root_module.addImport("build_consts", consts.createModule());
     exe.root_module.addImport("optz", b.dependency("optz", .{}).module("optz"));
     exe.root_module.addImport("cpuinfo", b.dependency("cpuinfo", .{}).module("cpuinfo"));
+    if (target.result.os.tag == .windows) {
+        // cpuinfo on Windows uses registry APIs such as RegGetValueW.
+        exe.linkSystemLibrary("advapi32");
+    }
 
     if (gpu_support) gpu_support: {
         const shader_compile = b.addSystemCommand(&.{ glslc, "-o" });
@@ -55,12 +59,32 @@ pub fn build(b: *std.Build) !void {
     }
 
     if (cuda_support) {
-        const cuda_compile = b.addSystemCommand(&.{ nvcc, "-O3", "-std=c++14", "-c", "-o" });
-        const cuda_obj = cuda_compile.addOutputFileArg("slimy_cuda.o");
+        const cuda_compile = if (target.result.os.tag == .windows)
+            b.addSystemCommand(&.{ nvcc, "-v", "-O3", "-std=c++14", "-allow-unsupported-compiler", "-c", "-o" })
+        else
+            b.addSystemCommand(&.{ nvcc, "-O3", "-std=c++14", "-c", "-o" });
+        const cuda_obj = cuda_compile.addOutputFileArg(if (target.result.os.tag == .windows) "slimy_cuda.obj" else "slimy_cuda.o");
         cuda_compile.addFileArg(b.path("src/cuda/search.cu"));
         exe.root_module.addObjectFile(cuda_obj);
+        if (b.graph.env_map.get("CUDA_PATH") orelse b.graph.env_map.get("CUDA_HOME")) |cuda_root| {
+            const lib_dir_linux = b.pathJoin(&.{ cuda_root, "lib64" });
+            const lib_dir_fallback = b.pathJoin(&.{ cuda_root, "lib" });
+            const lib_dir_win_x64 = b.pathJoin(&.{ cuda_root, "lib", "x64" });
+            switch (target.result.os.tag) {
+                .windows => {
+                    exe.root_module.addLibraryPath(.{ .cwd_relative = lib_dir_win_x64 });
+                    exe.root_module.addLibraryPath(.{ .cwd_relative = lib_dir_fallback });
+                },
+                else => {
+                    exe.root_module.addLibraryPath(.{ .cwd_relative = lib_dir_linux });
+                    exe.root_module.addLibraryPath(.{ .cwd_relative = lib_dir_fallback });
+                },
+            }
+        }
         exe.linkSystemLibrary("cudart");
-        exe.linkLibCpp();
+        if (target.result.os.tag != .windows) {
+            exe.linkLibCpp();
+        }
     }
 
     b.installArtifact(exe);

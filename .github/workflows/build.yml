@@ -1,25 +1,173 @@
 name: Build native binaries
-on: [push, pull_request]
+
+on:
+  push:
+  pull_request:
+
 jobs:
-  build:
-    runs-on: ubuntu-24.04
+  test:
+    name: Test (Linux x86_64)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: mlugg/setup-zig@v2
-        with: {version: "0.15.2"}
+        with:
+          version: "0.15.2"
       - name: Install ShaderC
         run: |
           sudo apt-get update
           sudo apt-get install -y glslc
       - name: Run tests
-        run: zig build test
-      - name: Build for x86_64 Linux glibc
-        run: zig build -Doptimize=ReleaseSafe -Dsuffix -Dstrip -Dtimestamp -Dtarget=x86_64-linux-gnu
-      - name: Build for x86_64 Linux musl
-        run: zig build -Doptimize=ReleaseSafe -Dsuffix -Dstrip -Dtimestamp -Dtarget=x86_64-linux-musl
-      - name: Build for x86_64 Windows
-        run: zig build -Doptimize=ReleaseSafe -Dsuffix -Dstrip -Dtimestamp -Dtarget=x86_64-windows
+        run: zig build test -Dgpu=true -Dcuda=false
+
+  build:
+    name: Build (${{ matrix.target }}, gpu=${{ matrix.gpu }}, cuda=${{ matrix.cuda }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux-gnu
+            gpu: true
+            cuda: true
+          - os: ubuntu-latest
+            target: aarch64-linux-gnu
+            gpu: true
+            cuda: false
+          - os: windows-latest
+            target: x86_64-windows-msvc
+            gpu: true
+            cuda: true
+          - os: windows-latest
+            target: aarch64-windows-msvc
+            gpu: true
+            cuda: false
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.2"
+
+      - name: Install ShaderC (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslc
+
+      - name: Install ShaderC (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install vulkan-sdk --no-progress -y
+
+      - name: Add Vulkan SDK to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $glslc = Get-Command glslc.exe -ErrorAction SilentlyContinue
+          if ($glslc) {
+            Split-Path $glslc.Source -Parent | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            exit 0
+          }
+
+          $candidates = @()
+          if ($env:VULKAN_SDK) {
+            $candidates += (Join-Path $env:VULKAN_SDK "Bin")
+          }
+          $candidates += Get-ChildItem "C:\VulkanSDK" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            Join-Path $_.FullName "Bin"
+          }
+
+          foreach ($dir in $candidates) {
+            if (Test-Path (Join-Path $dir "glslc.exe")) {
+              "$dir" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              exit 0
+            }
+          }
+
+          Write-Host "glslc.exe not found. Candidate dirs:"
+          $candidates | ForEach-Object { Write-Host " - $_" }
+          throw "glslc.exe not found on Windows runner"
+
+      - name: Install CUDA Toolkit
+        if: matrix.cuda
+        timeout-minutes: 25
+        uses: Jimver/cuda-toolkit@v0.2.29
+        with:
+          cuda: "12.6.3"
+          method: "network"
+          sub-packages: '["nvcc","cudart"]'
+          use-github-cache: false
+          use-local-cache: false
+          log-file-suffix: '${{ matrix.target }}-cuda-install.log'
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vsDevCmd = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat"
+          if (!(Test-Path $vsDevCmd)) {
+            $vsDevCmd = "C:\Program Files\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat"
+          }
+          if (!(Test-Path $vsDevCmd)) {
+            $vsDevCmd = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+          }
+          if (!(Test-Path $vsDevCmd)) {
+            throw "VsDevCmd.bat not found"
+          }
+
+          $targetArch = if ("${{ matrix.target }}" -like "aarch64-*") { "arm64" } else { "x64" }
+          cmd.exe /c "`"$vsDevCmd`" -arch=$targetArch -host_arch=x64 && set" |
+            ForEach-Object {
+              if ($_ -match "^(.*?)=(.*)$") {
+                Set-Item -Path "env:$($matches[1])" -Value $matches[2]
+              }
+            }
+
+          where.exe glslc
+          where.exe cl
+
+          if ("${{ matrix.cuda }}" -eq "true") {
+            if ($env:CUDA_PATH) {
+              $cudaBin = Join-Path $env:CUDA_PATH "bin"
+              if (Test-Path (Join-Path $cudaBin "nvcc.exe")) {
+                $env:PATH = "$cudaBin;$env:PATH"
+                "$cudaBin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+              }
+            }
+
+            where.exe nvcc
+            nvcc --version
+
+            # Preflight compile for clearer diagnostics than Zig's wrapped command.
+            nvcc -v -allow-unsupported-compiler -std=c++14 -c src/cuda/search.cu -o "$env:RUNNER_TEMP\slimy_cuda_preflight.obj"
+          }
+
+          zig build `
+            -Doptimize=ReleaseSafe `
+            -Dsuffix `
+            -Dstrip `
+            -Dtimestamp `
+            -Dtarget=${{ matrix.target }} `
+            -Dgpu=${{ matrix.gpu }} `
+            -Dcuda=${{ matrix.cuda }}
+
+      - name: Build (Non-Windows)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          zig build \
+            -Doptimize=ReleaseSafe \
+            -Dsuffix \
+            -Dstrip \
+            -Dtimestamp \
+            -Dtarget=${{ matrix.target }} \
+            -Dgpu=${{ matrix.gpu }} \
+            -Dcuda=${{ matrix.cuda }}
+
       - uses: actions/upload-artifact@v5
         with:
-          name: binaries
+          name: binaries-${{ matrix.target }}
           path: zig-out/bin/slimy-*-*

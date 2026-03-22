@@ -139,7 +139,7 @@ static __global__ void search_kernel(
     }
     __syncthreads();
 
-    if (rel_x >= width or rel_z >= height) return;
+    if (rel_x >= width || rel_z >= height) return;
 
     const int32_t x = x0 + (int32_t)rel_x;
     const int32_t z = z0 + (int32_t)rel_z;
@@ -293,8 +293,8 @@ int slimy_cuda_search_batch_ctx(
     uint32_t out_capacity,
     uint32_t* out_count
 ) {
-    if (!ctx or !out_results or !out_count) return 1;
-    if (width > ctx->max_width or height > ctx->max_height or out_capacity > ctx->max_out_capacity) return 3;
+    if (!ctx || !out_results || !out_count) return 1;
+    if (width > ctx->max_width || height > ctx->max_height || out_capacity > ctx->max_out_capacity) return 3;
 
     cudaError_t st = cudaSetDevice(ctx->device_index);
     if (st != cudaSuccess) return 1;
