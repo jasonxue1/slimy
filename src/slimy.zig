@@ -1,12 +1,39 @@
+const build_consts = @import("build_consts");
+
 pub const cpu = @import("cpu.zig");
-pub const gpu = @import("gpu.zig");
+pub const gpu = if (build_consts.gpu_support) @import("gpu.zig") else struct {
+    pub fn search(
+        params: SearchParams,
+        context: anytype,
+        comptime resultCallback: fn (@TypeOf(context), Result) void,
+        comptime progressCallback: ?fn (@TypeOf(context), completed: u64, total: u64) void,
+    ) anyerror!void {
+        _ = params;
+        _ = resultCallback;
+        _ = progressCallback;
+        return error.GpuNotSupported;
+    }
+};
+pub const cuda = if (build_consts.cuda_support) @import("cuda.zig") else struct {
+    pub fn search(
+        params: SearchParams,
+        context: anytype,
+        comptime resultCallback: fn (@TypeOf(context), Result) void,
+        comptime progressCallback: ?fn (@TypeOf(context), completed: u64, total: u64) void,
+    ) anyerror!void {
+        _ = params;
+        _ = resultCallback;
+        _ = progressCallback;
+        return error.CudaNotSupported;
+    }
+};
 
 pub fn search(
     params: SearchParams,
     context: anytype,
     comptime resultCallback: fn (@TypeOf(context), Result) void,
     comptime progressCallback: ?fn (@TypeOf(context), completed: u64, total: u64) void,
-) !void {
+) anyerror!void {
     switch (params.method) {
         .cpu => try cpu.search(params, context, resultCallback, progressCallback),
         .gpu => {
@@ -14,6 +41,13 @@ pub fn search(
                 return error.GpuNotSupported;
             } else {
                 try gpu.search(params, context, resultCallback, progressCallback);
+            }
+        },
+        .cuda => {
+            if (!build_consts.cuda_support) {
+                return error.CudaNotSupported;
+            } else {
+                try cuda.search(params, context, resultCallback, progressCallback);
             }
         },
     }
@@ -34,6 +68,12 @@ pub const SearchParams = struct {
 pub const SearchMethod = union(enum) {
     cpu: u8, // Thread count
     gpu: void,
+    cuda: CudaOptions,
+};
+
+pub const CudaOptions = struct {
+    /// Maximum number of cards to use. 0 means "use all discovered cards".
+    max_cards: u8 = 0,
 };
 
 pub const Result = struct {
@@ -65,5 +105,10 @@ pub const Result = struct {
 
 test {
     _ = cpu;
-    if (@import("build_consts").gpu_support) _ = gpu;
+    if (build_consts.gpu_support) {
+        _ = gpu;
+    }
+    if (build_consts.cuda_support) {
+        _ = cuda;
+    }
 }

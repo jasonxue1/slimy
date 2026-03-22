@@ -1,0 +1,19 @@
+.{
+    .name = .zcompute,
+    .fingerprint = 0x356229382b97d99c, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.15.1",
+    .version = "0.1.0-dev",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "update-vulkan.sh",
+        "vk.xml",
+    },
+    .dependencies = .{
+        .vulkan_zig = .{
+            .url = "https://github.com/Snektron/vulkan-zig/archive/f879074293f0e2f718c93fd19cc0a96260a3aa52.tar.gz",
+            .hash = "vulkan-0.0.0-r7Ytx6hBAwBUnt0XA-uOkR2hda4fAHFhQITNTgJpnFkY",
+        },
+    },
+}

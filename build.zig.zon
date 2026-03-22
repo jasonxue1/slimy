@@ -10,6 +10,7 @@
         "build.zig.zon",
         "src",
         "web",
+        "vendor",
     },
     .dependencies = .{
         .optz = .{
@@ -17,12 +18,10 @@
             .hash = "optz-0.1.0-G0SpG90hAAAI9PRlJsBWq4DZlEWOKOCebWniMTEAbBYS",
         },
         .cpuinfo = .{
-            .url = "git+https://github.com/InspectorBoat/cpuinfo-zig#28649909a75aa2056c8ddabd6c538d846d11d78b",
-            .hash = "cpuinfo-0.2.0-KAgw8dYhAAADblj3RJoOUWgwUZZcWMK56ECPpRBLQmYU",
+            .path = "vendor/cpuinfo",
         },
         .zcompute = .{
-            .url = "git+https://github.com/InspectorBoat/zcompute.git#248ad613c5133ff826096595001f451ddaf8c8b4",
-            .hash = "zcompute-0.1.0-dev-nNmXK7M4IQAhXrEM98WgcNZ63uKxLkiHTS0OcBi2cRrb",
+            .path = "vendor/zcompute",
         },
     },
 }

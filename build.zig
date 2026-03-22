@@ -8,21 +8,21 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
     const singlethread = b.option(bool, "singlethread", "Build in single-threaded mode") orelse false;
     const gpu_support = b.option(bool, "gpu", "Support using gpu search") orelse true;
+    const cuda_support = b.option(bool, "cuda", "Support using cuda search") orelse true;
     const strip = b.option(bool, "strip", "Strip debug info from binaries") orelse false;
     const suffix = b.option(bool, "suffix", "Suffix binary names with version and target") orelse false;
     const timestamp = b.option(bool, "timestamp", "Include build timestamp in version information") orelse false;
     const glslc = b.option([]const u8, "glslc", "Specify the path to the glslc binary") orelse "glslc";
-
-    const shader_compile = b.addSystemCommand(&.{ glslc, "-o" });
-    const shader_spv = shader_compile.addOutputFileArg("search.spv");
-    shader_compile.addFileArg(b.path("src/shader/search.comp"));
+    const nvcc = b.option([]const u8, "nvcc", "Specify the path to the nvcc binary") orelse "nvcc";
 
     const version = try getVersion(b);
 
     const consts = b.addOptions();
     consts.addOption(std.SemanticVersion, "version", version);
-    consts.addOption(?i64, "timestamp", if (timestamp) std.time.timestamp() else null);
+    // TODO: restore real build timestamps after std.time API migration.
+    consts.addOption(?i64, "timestamp", if (timestamp) @as(?i64, 0) else null);
     consts.addOption(bool, "gpu_support", gpu_support);
+    consts.addOption(bool, "cuda_support", cuda_support);
 
     const exe_name = if (suffix)
         b.fmt("slimy-{f}-{s}", .{ version, target.query.zigTriple(b.allocator) catch @panic("OOM") })
@@ -46,8 +46,21 @@ pub fn build(b: *std.Build) !void {
     exe.root_module.addImport("cpuinfo", b.dependency("cpuinfo", .{}).module("cpuinfo"));
 
     if (gpu_support) gpu_support: {
+        const shader_compile = b.addSystemCommand(&.{ glslc, "-o" });
+        const shader_spv = shader_compile.addOutputFileArg("search.spv");
+        shader_compile.addFileArg(b.path("src/shader/search.comp"));
+
         exe.root_module.addImport("zcompute", (b.lazyDependency("zcompute", .{}) orelse break :gpu_support).module("zcompute"));
         exe.root_module.addImport("search_spv", b.createModule(.{ .root_source_file = shader_spv }));
+    }
+
+    if (cuda_support) {
+        const cuda_compile = b.addSystemCommand(&.{ nvcc, "-O3", "-std=c++14", "-c", "-o" });
+        const cuda_obj = cuda_compile.addOutputFileArg("slimy_cuda.o");
+        cuda_compile.addFileArg(b.path("src/cuda/search.cu"));
+        exe.root_module.addObjectFile(cuda_obj);
+        exe.linkSystemLibrary("cudart");
+        exe.linkLibCpp();
     }
 
     b.installArtifact(exe);
@@ -109,7 +122,7 @@ fn getVersion(b: *std.Build) !std.SemanticVersion {
             &code,
             .Inherit,
         )) |commit| {
-            version.build = std.mem.trimRight(u8, commit, "\n");
+            version.build = std.mem.trimEnd(u8, commit, "\n");
 
             // Add -dirty if we have uncommitted changes
             _ = b.runAllowFail(

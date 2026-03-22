@@ -59,6 +59,10 @@ pub fn main() u8 {
             std.log.err("Invalid number", .{});
             return 1;
         },
+        error.SingleThreaded => {
+            std.log.err("This build is single-threaded; only '-j 1' is allowed", .{});
+            return 1;
+        },
         error.Overflow => {
             std.log.err("Number too large", .{});
             return 1;
@@ -84,19 +88,51 @@ pub fn main() u8 {
                 error.OutOfMemory => @panic("Out of memory"),
                 error.LockedMemoryLimitExceeded => unreachable,
                 error.Unexpected => @panic("Unexpected error"),
+                error.CudaNotSupported => {
+                    std.log.err("Slimy was compiled without CUDA support", .{});
+                    return 1;
+                },
+                error.NoCudaDevice => {
+                    std.log.err("No CUDA-capable NVIDIA GPU was detected for -mcuda", .{});
+                    return 1;
+                },
+                error.CudaRuntime => {
+                    std.log.err("CUDA runtime call failed", .{});
+                    return 1;
+                },
+                error.CudaOutputOverflow => {
+                    std.log.err("CUDA output buffer overflowed; try reducing RANGE", .{});
+                    return 1;
+                },
+                error.CudaBatchTooLarge => {
+                    std.log.err("CUDA batch is too large for current settings", .{});
+                    return 1;
+                },
                 else => |gpu_err| if (@import("build_consts").gpu_support) switch (gpu_err) {
                     error.ShaderInit => @panic("Compute pipeline init failed"),
                     error.BufferInit => @panic("Buffer allocation failed"),
                     error.ShaderExec => @panic("GPU compute execution failed"),
                     error.Timeout => @panic("Shader execution timed out"),
                     error.MemoryMapFailed => @panic("Mapping buffer memory failed"),
+                    error.NoSuitableDevice => {
+                        std.log.err("No suitable Vulkan compute device was found for one of the selected cards", .{});
+                        return 1;
+                    },
                     error.VulkanInit => {
                         std.log.err("Vulkan initialization failed. Your GPU may not support Vulkan; try using the CPU search instead (-mcpu option)", .{});
+                        return 1;
+                    },
+                    else => |e| {
+                        std.log.err("GPU error: {s}", .{@errorName(e)});
                         return 1;
                     },
                 } else switch (gpu_err) {
                     error.GpuNotSupported => {
                         std.log.err("Slimy was compiled without GPU support; try using the CPU search instead (-mcpu option)", .{});
+                        return 1;
+                    },
+                    else => |e| {
+                        std.log.err("Error: {s}", .{@errorName(e)});
                         return 1;
                     },
                 },
@@ -118,6 +154,7 @@ const OutputContext = struct {
     buf: std.ArrayList(slimy.Result),
 
     progress_timer: ?std.time.Timer,
+    last_progress_draw_ns: u64 = 0,
     completed: u64 = 0,
     total: u64 = 1,
 
@@ -189,17 +226,7 @@ const OutputContext = struct {
 
     /// Only flushes once, to prevent visual artifacts
     fn clearAndPrintProgress(self: *OutputContext) !void {
-        const timer = &(self.progress_timer orelse return);
-
-        const tick = timer.read() / progress_tick;
-
-        try self.stderr.writeAll("\r\x1b[K");
-
-        try self.stderr.print("[{u}] {d:.2}%", .{
-            progress_spinner[tick % progress_spinner.len],
-            @as(f64, @floatFromInt(100_00 * self.completed / self.total)) * 0.01,
-        });
-        try self.stderr.flush();
+        try self.renderProgress(false);
     }
 
     fn clearProgress(self: *OutputContext) !void {
@@ -210,13 +237,35 @@ const OutputContext = struct {
     }
 
     fn printProgress(self: *OutputContext) !void {
+        try self.renderProgress(false);
+    }
+
+    fn renderProgress(self: *OutputContext, force: bool) !void {
         const timer = &(self.progress_timer orelse return);
+        const elapsed_ns = timer.read();
+        if (!force and elapsed_ns - self.last_progress_draw_ns < std.time.ns_per_s and self.completed < self.total) {
+            return;
+        }
+        self.last_progress_draw_ns = elapsed_ns;
+        try self.stderr.writeAll("\r\x1b[K");
 
-        const tick = timer.read() / progress_tick;
+        const tick = elapsed_ns / progress_tick;
+        const percent = @as(f64, @floatFromInt(100_00 * self.completed / self.total)) * 0.01;
+        const elapsed_s = @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, std.time.ns_per_s);
 
-        try self.stderr.print("[{u}] {d:.2}%", .{
+        const total_est_s, const remaining_s = if (self.completed == 0)
+            .{ 0.0, 0.0 }
+        else blk: {
+            const total_est = elapsed_s * @as(f64, @floatFromInt(self.total)) / @as(f64, @floatFromInt(self.completed));
+            break :blk .{ total_est, @max(0.0, total_est - elapsed_s) };
+        };
+
+        try self.stderr.print("[{u}] {d:.2}%  t={d:.1}s  eta={d:.1}s  total={d:.1}s", .{
             progress_spinner[tick % progress_spinner.len],
-            @as(f64, @floatFromInt(100_00 * self.completed / self.total)) * 0.01,
+            percent,
+            elapsed_s,
+            remaining_s,
+            total_est_s,
         });
         try self.stderr.flush();
     }
@@ -360,8 +409,9 @@ fn usage(out: *std.Io.Writer) u8 {
         \\  -f FORMAT       Output format (human [default] or csv)
         \\  -u              Disable output sorting
         \\  -q              Disable progress reporting
-        \\  -m METHOD       Search method (cpu [default] or gpu)
+        \\  -m METHOD       Search method (cpu [default], gpu, or cuda)
         \\  -j THREADS      Number of threads to use (for cpu method only)
+        \\  -k CARDS        Max number of cards to use (for cuda method only, 0=all)
         \\  -s FILENAME     Read search parameters from a JSON file (or - for stdin)
         \\  -b              Benchmark mode
         \\
@@ -392,6 +442,7 @@ const ArgsError = error{
     MissingParameter,
     InvalidFormat,
     InvalidMethod,
+    SingleThreaded,
     InvalidCharacter,
     Overflow,
     JsonError,
@@ -411,6 +462,7 @@ fn parseArgs(arena: std.mem.Allocator) ArgsError!Options {
 
         m: []const u8 = "cpu",
         j: u8 = 0,
+        k: u8 = 0,
 
         s: ?[]const u8 = null,
 
@@ -432,9 +484,9 @@ fn parseArgs(arena: std.mem.Allocator) ArgsError!Options {
     const progress = !flags.q and std.fs.File.stderr().supportsAnsiEscapeCodes();
 
     const method_id = std.meta.stringToEnum(std.meta.Tag(slimy.SearchMethod), flags.m) orelse {
-        std.log.err("Invalid search method '{f}'. Must be 'gpu' or 'cpu'", .{@as(
+        std.log.err("Invalid search method '{f}'. Must be 'cpu', 'gpu', or 'cuda'", .{@as(
             std.fmt.Alt([]const u8, stringEscape),
-            .{ .data = flags.f },
+            .{ .data = flags.m },
         )});
         return error.InvalidMethod;
     };
@@ -458,6 +510,7 @@ fn parseArgs(arena: std.mem.Allocator) ArgsError!Options {
     const method: slimy.SearchMethod = switch (method_id) {
         .gpu => .gpu,
         .cpu => .{ .cpu = flags.j },
+        .cuda => .{ .cuda = .{ .max_cards = flags.k } },
     };
 
     var searches: []const slimy.SearchParams = undefined;

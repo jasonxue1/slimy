@@ -15,7 +15,7 @@ pub fn search(
     comptime progressCallback: ?fn (@TypeOf(callback_context), completed: u64, total: u64) void,
 ) !void {
     var ctx = Context{};
-    try ctx.init();
+    try ctx.init(.{});
     defer ctx.deinit();
     try ctx.search(params, callback_context, resultCallback, progressCallback);
 }
@@ -34,13 +34,22 @@ pub const Context = struct {
         zc.storageBuffer("results", 1, zc.Buffer(slimy.Result)),
     });
 
-    pub fn init(self: *Context) !void {
+    pub const InitOptions = struct {
+        device_index: ?u32 = null,
+    };
+
+    pub fn init(self: *Context, opts: InitOptions) !void {
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
 
-        self.ctx = zc.Context.init(arena.allocator(), .{}) catch |err| {
+        self.ctx = zc.Context.init(arena.allocator(), .{
+            .vulkan_device_index = opts.device_index,
+        }) catch |err| {
             log.err("Vulkan init error: {s}", .{@errorName(err)});
-            return error.VulkanInit;
+            return switch (err) {
+                error.NoSuitableDevice => error.NoSuitableDevice,
+                else => error.VulkanInit,
+            };
         };
 
         self.shad = Shader.initBytes(arena.allocator(), &self.ctx, @embedFile("search_spv")) catch |err| {

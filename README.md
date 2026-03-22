@@ -133,3 +133,16 @@ To run Slimy in benchmark mode, use the `-b` option with no other arguments:
 ```
 slimy-SYSTEM -b
 ```
+
+### CUDA multi-card mode
+
+`-m cuda` enables the CUDA-oriented multi-card scheduler.
+It uses CUDA runtime directly (no Vulkan dependency), discovers NVIDIA cards, scores each card using compute capability limits and local VRAM size, and then distributes work dynamically across cards.
+
+You can limit how many cards are used:
+
+```
+slimy-SYSTEM -m cuda -k 2 -- SEED RANGE THRESHOLD
+```
+
+- `-k 0` (default) means use all discovered cards

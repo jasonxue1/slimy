@@ -91,7 +91,7 @@ fn targetParams(rate: u128, target_secs: u8, method: slimy.SearchMethod) slimy.S
 
 fn benchGpu(w: *std.Io.Writer) !void {
     var gpu_context: slimy.gpu.Context = .{};
-    try gpu_context.init();
+    try gpu_context.init(.{});
     try printGpuHeader(w, gpu_context);
 
     var collector: Collector = .{};
